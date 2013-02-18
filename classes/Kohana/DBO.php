@@ -3,6 +3,9 @@
 /**
  * Database Object
  *
+ * Inspired by Kohana ORM (copyright 2007-2012 Kohana Team, license: http://kohanaframework.org/license).
+ * 
+ * @copyright (c) 2013 Leon van der Veen
  * @author Leon van der Veen <vdvleon@gmail.com>
  */
 class Kohana_DBO
@@ -213,169 +216,152 @@ class Kohana_DBO
 	 */
 	static public function updateDatabase()
 	{
-		// Collect models
-		foreach (Kohana::list_files('classes/Model') as $file)
+		// Profiler
+		if (Kohana::$profiling) $benchmark = Profiler::start('DBO::updateDatabase', 'Update database to newest version');
+
+		try
 		{
-			try
+			// Collect models
+			foreach (Kohana::list_files('classes/Model') as $file)
 			{
-				if (preg_match('@/Model/(.+)\.php$@is', $file, $m))
+				try
 				{
-					$model = $m[1];
-					$class = 'Model_' . $model;
-					if (is_a($class, 'DBO', true)) $class::staticInit();
+					if (preg_match('@/Model/(.+)\.php$@is', $file, $m))
+					{
+						$model = $m[1];
+						$class = 'Model_' . $model;
+						if (is_a($class, 'DBO', true)) $class::staticInit();
+					}
 				}
+				catch (Exception $e)
+				{}
 			}
-			catch (Exception $e)
-			{}
-		}
 
-		// Collect all tables
-		$tables = [];
-		foreach (self::$modelData_ as $model => $data)
-		{
-			// Table
-			$table = $data['table'];
-			if (!isset($tables[$table])) $tables[$table] = [
-				'table'			=> $table,
-				'model'			=> NULL,
-				'columns'		=> [],
-				'foreignKeys'	=> [],
-				'uniques'		=> [],
-				'indexes'		=> [],
-				'functions'		=> [],
-				'triggers'		=> [],
-				'rules'			=> [],
-				'updateDefaults' => [],
-				'postTable'		=> NULL,
-				'pre'			=> NULL,
-			];
-
-			// Model
-			$tables[$table]['model'] = $model;
-
-			// Columns
-			$tables[$table]['columns'] = Arr::merge($tables[$table]['columns'], $data['columns']);
-
-			// Uniques
-			$tables[$table]['uniques'] = Arr::merge($tables[$table]['uniques'], $data['uniques']);
-
-			// Indexes
-			$tables[$table]['indexes'] = Arr::merge($tables[$table]['indexes'], $data['indexes']);
-
-			// Functions
-			$tables[$table]['functions'] = Arr::merge($tables[$table]['functions'], $data['functions']);
-
-			// Triggers
-			$tables[$table]['triggers'] = Arr::merge($tables[$table]['triggers'], $data['triggers']);
-
-			// Rules
-			$tables[$table]['rules'] = Arr::merge($tables[$table]['rules'], $data['rules']);
-
-			// Update defaults
-			$tables[$table]['updateDefaults'] = Arr::merge($tables[$table]['updateDefaults'], $data['updateDefaults']);
-
-			// Post table update
-			$tables[$table]['postTable'] = $data['postTableUpdate'];
-
-			// Pre update
-			$tables[$table]['pre'] = $data['preUpdate'];
-		}
-		foreach (self::$modelData_ as $model => $data)
-		{
-			foreach ($data['relations'] as $rel => $relation)
+			// Collect all tables
+			$tables = [];
+			foreach (self::$modelData_ as $model => $data)
+			{
+				$table = $data['table'];
+				self::initTable($tables, $table);
+				$tables[$table] = Arr::merge($tables[$table], [
+					'model'				=> $model,
+					'columns'			=> $data['columns'],
+					'uniques'			=> $data['uniques'],
+					'indexes'			=> $data['indexes'],
+					'functions'			=> $data['functions'],
+					'triggers'			=> $data['triggers'],
+					'rules'				=> $data['rules'],
+					'updateDefaults'	=> $data['updateDefaults'],
+					'events'			=> $data['events'],
+				]);
+			}
+			foreach (self::$modelData_ as $model => $data) foreach ($data['relations'] as $rel => $relation) 
 			{
 				if ($relation['getFunction'] === NULL && $relation['setFunction'] === NULL && $relation['type'] == self::RELATION_MANY_TO_MANY)
 				{
-					// Table
 					$table = $relation['through'];
-					if (!isset($tables[$table])) $tables[$table] = [
-						'table'			=> $table,
-						'model'			=> NULL,
-						'columns'		=> [],
-						'foreignKeys'	=> [],
-						'uniques'		=> [],
-						'indexes'		=> [],
-						'functions'		=> [],
-						'triggers'		=> [],
-						'rules'			=> [],
-						'updateDefaults' => [],
-						'postTable'		=> NULL,
-						'pre'			=> NULL,
-					];
-
-					// Columns
+					self::initTable($tables, $table);
 					$columns = [];
 					foreach ($relation['foreignKey'] as $i => $fk) $columns[$fk] = $data['columns'][$data['primaryKey'][$i]];
 					foreach ($relation['farKey'] as $i => $fk) $columns[$fk] = self::$modelData_[$relation['model']]['columns'][self::$modelData_[$relation['model']]['primaryKey'][$i]];
-					foreach ($columns as &$column)
+					foreach ($columns as &$column_)
 					{
-						$column['autoIncrement'] = false;
-						$column['nullable'] = false;
-						$column['default'] = NULL;
-						$column['indexes'] = [];
-						$column['uniques'] = [];
-						$column['sql'] = NULL;
+						$column_['autoIncrement'] = false;
+						$column_['nullable'] = false;
+						$column_['default'] = NULL;
+						$column_['sql'] = NULL;
 					}
 					$tables[$table]['columns'] = Arr::merge($tables[$table]['columns'], $columns);
 				}
 			}
-		}
 
-		// Collect all foreign keys
-		foreach (self::$modelData_ as $model => $data)
-		{
-			// Table
-			$table = $data['table'];
-			
-			// Foreign keys
-			foreach ($data['relations'] as $rel => $relation)
+			// Collect all foreign keys
+			foreach (self::$modelData_ as $model => $data)
 			{
-				$onUpdate = $relation['onUpdate'] ?: self::ACTION_CASCADE;
-				$onDelete = $relation['onDelete'] ?: self::ACTION_CASCADE;
-				if ($relation['getFunction'] !== NULL || $relation['setFunction'] !== NULL) continue;
-				switch ($relation['type'])
+				$table = $data['table'];
+				foreach ($data['relations'] as $rel => $relation)
 				{
-					case self::RELATION_BELONGS_TO:
-						$owner = $table;
-						$targets = [self::$modelData_[$relation['model']]['table']];
-						$foreignKeys = [$relation['foreignKey']];
-						$farKeys = [$relation['farKey']];
-					break;
-					case self::RELATION_HAS_ONE:
-					case self::RELATION_HAS_MANY:
-						$owner = self::$modelData_[$relation['model']]['table'];
-						$targets = [$table];
-						$foreignKeys = [$relation['foreignKey']];
-						$farKeys = [$relation['farKey']];
-					break;
-					case self::RELATION_MANY_TO_MANY:
-						$owner = $relation['through'];
-						$targets = [$table, self::$modelData_[$relation['model']]['table']];
-						$foreignKeys = [$relation['foreignKey'], $relation['farKey']];
-						$farKeys = [$data['primaryKey'], self::$modelData_[$relation['model']]['primaryKey']];
-					break;
-				}
-				foreach ($targets as $i => $target)
-				{
-					$name = $owner . '-' . implode('_', $foreignKeys[$i]) . '-' . implode('_', $farKeys[$i]) . '-' . $target . '-fk';
-					$tables[$owner]['foreignKeys'][$name] = [
-						'name'			=> $name,
-						'relation'		=> $table . '-' . $rel,
-						'columns'		=> $foreignKeys[$i],
-						'table'			=> $target,
-						'farColumns'	=> $farKeys[$i],
-						'onUpdate'		=> $onUpdate,
-						'onDelete'		=> $onDelete,
-					];
+					$onUpdate = $relation['onUpdate'] ?: self::ACTION_CASCADE;
+					$onDelete = $relation['onDelete'] ?: self::ACTION_CASCADE;
+					if ($relation['getFunction'] !== NULL || $relation['setFunction'] !== NULL) continue;
+					switch ($relation['type'])
+					{
+						case self::RELATION_BELONGS_TO:
+							$owner = $table;
+							$targets = [self::$modelData_[$relation['model']]['table']];
+							$foreignKeys = [$relation['foreignKey']];
+							$farKeys = [$relation['farKey']];
+						break;
+						case self::RELATION_HAS_ONE:
+						case self::RELATION_HAS_MANY:
+							$owner = self::$modelData_[$relation['model']]['table'];
+							$targets = [$table];
+							$foreignKeys = [$relation['foreignKey']];
+							$farKeys = [$relation['farKey']];
+						break;
+						case self::RELATION_MANY_TO_MANY:
+							$owner = $relation['through'];
+							$targets = [$table, self::$modelData_[$relation['model']]['table']];
+							$foreignKeys = [$relation['foreignKey'], $relation['farKey']];
+							$farKeys = [$data['primaryKey'], self::$modelData_[$relation['model']]['primaryKey']];
+						break;
+					}
+					foreach ($targets as $i => $target)
+					{
+						$name = $owner . '-' . implode('_', $foreignKeys[$i]) . '-' . implode('_', $farKeys[$i]) . '-' . $target . '-fk';
+						$tables[$owner]['foreignKeys'][$name] = [
+							'name'			=> $name,
+							'relation'		=> $table . '-' . $rel,
+							'columns'		=> $foreignKeys[$i],
+							'table'			=> $target,
+							'farColumns'	=> $farKeys[$i],
+							'onUpdate'		=> $onUpdate,
+							'onDelete'		=> $onDelete,
+						];
+					}
 				}
 			}
-		}
 
-		// SQL helper
-		$class = 'DBO_' . Kohana::$config->load('database')->{self::$db ?: Database::$default}['type'];
-		$sql = new $class(self::$db);
-		if (!($sql instanceof DBO_SQL)) throw new Kohana_Exception('Invalid DBO_SQL class: \':class\'', [':class' => $class]);
-		$sql->upgradeTables($tables);
+			// SQL helper
+			$class = 'DBO_' . Kohana::$config->load('database')->{self::$db ?: Database::$default}['type'];
+			$sql = new $class(self::$db);
+			if (!($sql instanceof DBO_SQL)) throw new Kohana_Exception('Invalid DBO_SQL class: \':class\'', [':class' => $class]);
+			$sql->upgradeTables($tables);
+
+			// Stop profiling
+			if (isset($benchmark)) Profiler::stop($benchmark);
+		}
+		catch (Exception $e)
+		{
+			// Stop profiling
+			if (isset($benchmark)) Profiler::delete($benchmark);
+
+			// Rethrow
+			throw $e;
+		}
+	}
+
+	/**
+	 * Init table
+	 * 
+	 * @param array &$tables
+	 * @param string $table
+	 */
+	static protected function initTable(array &$tables, $table)
+	{
+		if (!isset($tables[$table])) $tables[$table] = [
+			'table'			=> $table,
+			'model'			=> NULL,
+			'columns'		=> [],
+			'foreignKeys'	=> [],
+			'uniques'		=> [],
+			'indexes'		=> [],
+			'functions'		=> [],
+			'triggers'		=> [],
+			'rules'			=> [],
+			'updateDefaults' => [],
+			'events'		=> [],
+		];
 	}
 
 	/**
@@ -471,25 +457,28 @@ class Kohana_DBO
 		return $this->loadResult_(true);
 	}
 
-	protected function buildSelect_()
+	/**
+	 * Columns
+	 * 
+	 * @return array
+	 */
+	public function columns()
 	{
-		$columns = array();
-		foreach (self::$modelData_[$this->model_]['columns'] as $column => $_) $columns[] = [$this->model_ . '.' . $column, $column];
+		$columns = array(); foreach (self::$modelData_[$this->model_]['columns'] as $column => $_) $columns[] = $column;
 		return $columns;
 	}
 
-	public function fields()
-	{
-		$columns = array();
-		foreach (self::$modelData_[$this->model_]['columns'] as $column => $_) $columns[] = $column;
-		return $columns;
-	}
-
+	/**
+	 * Load result
+	 * 
+	 * @param bool $multiple
+	 */
 	protected function loadResult_($multiple = false)
 	{
 		$this->dbBuilder_->from([self::$modelData_[$this->model_]['table'], $this->model_]);
 		if ($multiple === false) $this->dbBuilder_->limit(1);
-		$this->dbBuilder_->select_array($this->buildSelect_());
+		$columns = array(); foreach (self::$modelData_[$this->model_]['columns'] as $column => $_) $columns[] = [$this->model_ . '.' . $column, $column];
+		$this->dbBuilder_->select_array($columns);
 		if ($multiple === true)
 		{
 			$result = $this->dbBuilder_->as_object(self::$modelData_[$this->model_]['class'])->execute(self::$db);
@@ -506,25 +495,23 @@ class Kohana_DBO
 		}
 	}
 
+	/**
+	 * Init database builder
+	 * 
+	 * @param string $type
+	 */
 	protected function build_($type)
 	{
 		switch ($type)
 		{
-			case Database::SELECT:
-				$this->dbBuilder_ = DB::select();
-			break;
-			case Database::UPDATE:
-				$this->dbBuilder_ = DB::update([self::$modelData_[$this->model_]['table'], $this->model_]);
-			break;
-			case Database::DELETE:
-				$this->dbBuilder_ = DB::delete(self::$modelData_[$this->model_]['table']);
+			case Database::SELECT:	$this->dbBuilder_ = DB::select(); break;
+			case Database::UPDATE:	$this->dbBuilder_ = DB::update([self::$modelData_[$this->model_]['table'], $this->model_]); break;
 		}
 		foreach ($this->dbPending_ as $method)
 		{
 			$this->dbApplied_[$method['name']] = $method['name'];
 			call_user_func_array(array($this->dbBuilder_, $method['name']), $method['args']);
 		}
-		return $this;
 	}
 
 	/**
@@ -568,10 +555,7 @@ class Kohana_DBO
 	 * 
 	 * @return This
 	 */
-	public function save()
-	{
-		return $this->loaded() ? $this->update() : $this->create();
-	}
+	public function save() { return $this->loaded() ? $this->update() : $this->create(); }
 
 	/**
 	 * PK
@@ -580,32 +564,40 @@ class Kohana_DBO
 	 */
 	public function pk()
 	{
-		$pk = [];
-		foreach (self::$modelData_[$this->model_]['primaryKey'] as $k) $pk[$k] = $this->getField($k);
+		$pk = []; foreach (self::$modelData_[$this->model_]['primaryKey'] as $k) $pk[$k] = $this->getField($k);
 		return $pk;
+	}
+
+	/**
+	 * To JSON
+	 * 
+	 * @param array $whiteList
+	 * @param array $blackList
+	 * @param bool $includeSingleRelations
+	 * @param int $maxDepth
+	 * @return string
+	 */
+	public function toJSON(array $whiteList = NULL, array $blackList = NULL, $includeSingleRelations = true, $maxDepth = 2)
+	{
+		return json_encode($this->asArray($whiteList, $blackList, $includeSingleRelations, $maxDepth));
 	}
 
 	/**
 	 * As array
 	 * 
+	 * @param array $whiteList
+	 * @param array $blackList
 	 * @param bool $includeSingleRelations
+	 * @param int $maxDepth
 	 * @return array
 	 */
 	public function asArray(array $whiteList = NULL, array $blackList = NULL, $includeSingleRelations = true, $maxDepth = 2)
 	{
-		// Array
 		$array = ['__loaded__' => false];
-
-		// Blacklist
 		if ($blackList === NULL) $blackList = self::$modelData_[$this->model_]['hidden'];
-
-		// Max depth?
 		if ($maxDepth > 0)
 		{
-			// Loaded
 			$array['__loaded__'] = true;
-
-			// Columns
 			if ($whiteList === NULL)
 			{
 				foreach (self::$modelData_[$this->model_]['columns'] as $col => $_) if (!in_array($col, $blackList)) $array[$col] = $this->getField($col);
@@ -638,26 +630,11 @@ class Kohana_DBO
 			{
 				case self::RELATION_HAS_ONE:
 					$r = $this->getRelation($rel);
-					if (
-						$r->loaded()
-						&& (
-							$relation['onDelete'] == self::ACTION_RESTRICT
-							|| !$r->isDeletable($history)
-						)
-					) return false;
+					if ($r->loaded() && ($relation['onDelete'] == self::ACTION_RESTRICT || !$r->isDeletable($history))) return false;
 				break;
 				case self::RELATION_HAS_MANY:
 				case self::RELATION_MANY_TO_MANY:
-					foreach ($this->getRelation($rel)->findAll() as $r)
-					{
-						if (
-							$r->loaded()
-							&& (
-								$relation['onDelete'] == self::ACTION_RESTRICT
-								|| !$r->isDeletable($history)
-							)
-						) return false;	
-					}
+					foreach ($this->getRelation($rel)->findAll() as $r) if ($r->loaded() && ($relation['onDelete'] == self::ACTION_RESTRICT || !$r->isDeletable($history))) return false;
 				break;
 			}
 		}
@@ -668,7 +645,7 @@ class Kohana_DBO
 	/**
 	 * Delete
 	 * 
-	 * @param bool $check
+	 * @param bool $check Check isDeletable before actual deleting
 	 * @return This
 	 */
 	public function delete($check = true)
@@ -687,7 +664,7 @@ class Kohana_DBO
 	}
 
 	/**
-	 * 
+	 * Reload
 	 * 
 	 * @return This
 	 */
@@ -714,18 +691,15 @@ class Kohana_DBO
 	 */
 	public function update()
 	{
+		// Check
 		if (!$this->loaded()) throw new Kohana_Exception('Can not update an not loaded model');
-
-		// Nothing to update
 		if (empty($this->changed_)) return $this;
 
 		// Get data
-		$data = array();
-		foreach ($this->changed_ as $column => $_) $data[$column] = $this->data_[$column];
+		$data = array(); foreach ($this->changed_ as $column => $_) $data[$column] = $this->data_[$column];
 		
 		// Update a single record
-		$update = DB::update(self::$modelData_[$this->model_]['table'])
-			->set($data);
+		$update = DB::update(self::$modelData_[$this->model_]['table'])->set($data);
 		foreach (self::$modelData_[$this->model_]['primaryKey'] as $pk) $update->where($pk, '=', $this->originalValues_[$pk]);
 		$update->execute(self::$db);
 
@@ -749,21 +723,21 @@ class Kohana_DBO
 	 */
 	public function create()
 	{
+		// Check
 		if ($this->loaded()) throw new Kohana_Exception('Can not create an already loaded model');
 
 		// Get data
-		$data = array();
-		foreach ($this->changed_ as $column => $_) $data[$column] = $this->data_[$column];
+		$data = array(); foreach ($this->changed_ as $column => $_) $data[$column] = $this->data_[$column];
 		
 		// Valid data?
 		if (count(self::$modelData_[$this->model_]['primaryKey']) > 1)
 		{
-			foreach (self::$modelData_[$this->model_]['primaryKey'] as $pk)
+			foreach (self::$modelData_[$this->model_]['primaryKey'] as $pk) 
 			{
 				if (!isset($data[$pk])) throw new Kohana_Exception('Multi primary key field \':field\' not given', [':field' => $pk]);
 			}
 		}
-
+		
 		// Insert
 		if (empty($data))
 		{
@@ -1111,300 +1085,291 @@ class Kohana_DBO
 	}
 
 	/**
+	 * Init key list
+	 * 
+	 * @param string $class
+	 * @param string $var
+	 * @return array
+	 */
+	static protected function initKeyList($class, $var)
+	{
+		$list = isset($class::$$var) ? $class::$$var : [];
+		if (!is_array($list)) $list = [$list];
+		foreach ($list as &$val) $val = self::translateKey($val);
+		return $list;
+	}
+
+	/**
+	 * Init index
+	 * 
+	 * @param string $class
+	 * @param string $var
+	 * @return array
+	 */
+	static protected function initIndex($class, $var)
+	{
+		$list = isset($class::$$var) ? $class::$$var : [];
+		if (is_string($list)) $list = [[$list]];
+		else if (!is_array($list)) throw new Kohana_Exception('Invalid $' . $var . ' configuration provided, expected in form: $' . $var  . ' = [[\'field1\', \'field2\'],[\'field3\'], ...]');
+		foreach ($list as &$val)
+		{
+			if (is_string($val)) $val = [$val];
+			foreach ($val as &$val_) $val_ = self::translateKey($val_);
+		}
+		return $list;
+	}
+
+	/**
 	 * Static init
 	 * 
 	 * @return string Object model
 	 */
 	static private function staticInit()
 	{
-		// Class
+		// Class and model
 		$class = get_called_class();
 		if (strpos($class, 'Model_') !== 0)
 		{
 			throw new Kohana_Exception('Can not make an instance of an DBO object in a not Model (Model_) context (for class name :class', [':class' => $class]);
 		}
-
-		// Model
 		$model = substr(get_called_class(), 6);
 
 		// Already inited?
 		if (isset(self::$modelData_[$model])) return $model;
 
-		// Table
-		if (isset($class::$table)) $table = $class::$table;
-		else $table = Inflector::plural(Inflector::underscore(Inflector::decamelize($model)));
+		// Profiler
+		if (Kohana::$profiling) $benchmark = Profiler::start('DBO::staticInt', $class . '::staticInit()');
 
-		// Primary key
-		if (isset($class::$primaryKey)) $primaryKey = $class::$primaryKey;
-		else $primaryKey = [];
-		if (!is_array($primaryKey)) $primaryKey = [$primaryKey];
-		foreach ($primaryKey as &$pk__) $pk__ = self::translateKey($pk__);
-
-		// Hidden
-		if (isset($class::$hidden)) $hidden = $class::$hidden;
-		else $hidden = [];
-		if (!is_array($hidden)) $hidden = [$hidden];
-		foreach ($hidden as &$hidden__) $hidden__ = self::translateKey($hidden__);
-
-		// DB
-		if (isset($class::$db)) $db = $class::$db;
-		else $db = NULL;
-
-		// Functions
-		if (isset($class::$functions)) $functions = $class::$functions;
-		else $functions = [];
-		if (!is_array($functions)) throw new Kohana_Exception('Invalid $functions config, expected in form $functions = [\'name\' => \'SQL\', ...]');
-		foreach ($functions as &$function) $function = trim($function);
-
-		// Update defaults
-		if (isset($class::$updateDefaults)) $updateDefaults_ = $class::$updateDefaults;
-		else $updateDefaults_ = [];
-		if (!is_array($updateDefaults_)) throw new Kohana_Exception('Invalid $updateDefaults config, expected in form $updateDefaults = [\'field\' => \'DEFAULT\', ...]');
-		$updateDefaults = [];
-		foreach ($updateDefaults_ as $key => $value) $updateDefaults[self::translateKey($key)] = $value;
-		
-		// Pre update
-		if (is_callable([$class, 'preUpdate'])) $preUpdate = [$class, 'preUpdate'];
-		else $preUpdate = NULL;
-
-		// Post table update
-		if (is_callable([$class, 'postTableUpdate'])) $postTableUpdate = [$class, 'postTableUpdate'];
-		else $postTableUpdate = NULL;
-
-		// Triggers
-		if (isset($class::$triggers)) $triggers = $class::$triggers;
-		else $triggers = [];
-		if (!is_array($triggers)) throw new Kohana_Exception('Invalid $triggers config, expected in form $triggers = [[\'type\' => \'TYPE\', \'event\' => \'EVENT\', \'for\' => \'FOR\', \'function\' => \'FUNCTION\', \'args\' => [\'arg\', \'arg2\', ...], \'columns\' => [\'COLUMN1\', ...]]]');
-		$isFlat = count($triggers) > 0;
-		foreach ($triggers as $trigger)
+		try
 		{
-			if (is_array($trigger))
-			{
-				$isFlat = false;
-				break;
-			}
-		}
-		if ($isFlat) $triggers = [$triggers];
-		foreach ($triggers as &$trigger)
-		{
-			if (
-				!is_array($trigger)
-				|| !isset($trigger['type'])
-				|| !isset($trigger['event'])
-				|| !isset($trigger['function'])
-			)
-			{
-				throw new Kohana_Exception('Invalid $triggers config, expected in form $triggers = [[\'type\' => \'TYPE\', \'event\' => \'EVENT\', \'for\' => \'FOR\', \'function\' => \'FUNCTION\', \'args\' => [\'arg\', \'arg2\', ...], \'columns\' => [\'COLUMN1\', ...]]');
-			}
-			$trigger['for'] = Arr::get($trigger, 'for', NULL);
-			if ($trigger['for'] === NULL) $trigger['for'] = self::TRIGGER_FOR_ROW;
-			$trigger['when'] = Arr::get($trigger, 'when', NULL);
-			$trigger['columns'] = Arr::get($trigger, 'columns', []);
-			if (!is_array($trigger['columns'])) $trigger['columns'] = [$trigger['columns']];
-			$trigger['args'] = Arr::get($trigger, 'args', []);
-			if (!is_array($trigger['args'])) $trigger['args'] = [$trigger['args']];
-			if (is_array($trigger['event'])) $trigger['event'] = implode(' OR ', $trigger['event']);
-		}
+			// Table
+			$table = isset($class::$table) ? $class::$table : Inflector::plural(Inflector::underscore(Inflector::decamelize($model)));
 
-		// Rules
-		if (isset($class::$rules)) $rules = $class::$rules;
-		else $rules = [];
-		if (!is_array($rules)) throw new Kohana_Exception('Invalid $rules config, expected in form $rules = [[\'event\' => \'EVENT\', \'where\' => \'WHERE\', \'do\' => \'DO\', \'commands\' => [\'COMMAND1\', ...]]]');
-		$isFlat = count($rules) > 0;
-		foreach ($rules as $rule)
-		{
-			if (is_array($rule))
-			{
-				$isFlat = false;
-				break;
-			}
-		}
-		if ($isFlat) $rules = [$rules];
-		foreach ($rules as &$rule)
-		{
-			if (
-				!is_array($rule)
-				|| !isset($rule['event'])
-				|| !isset($rule['do'])
-			)
-			{
-				throw new Kohana_Exception('Invalid $rules config, expected in form $rules = [[\'event\' => \'EVENT\', \'where\' => \'WHERE\', \'do\' => \'DO\', \'commands\' => [\'COMMAND1\', ...]]]');
-			}
-			$rule['where'] = Arr::get($rule, 'where', NULL);
-			$rule['commands'] = Arr::get($rule, 'commands', []);
-			if (!is_array($rule['commands'])) $rule['commands'] = [$rule['commands']];
-		}
+			// Vars
+			$primaryKey = self::initKeyList($class, 'primaryKey');
+			$hidden = self::initKeyList($class, 'hidden');
+			$db = isset($class::$db) ? $class::$db : NULL;
 
-		// Columns
-		if (!isset($class::$columns)) throw new Kohana_Exception('No columns provided');
-		$columns = [];
-		foreach ($class::$columns as $key => $col)
-		{
-			if (is_numeric($key))
+			// Functions
+			$functions = isset($class::$functions) ? $class::$functions : [];
+			if (!is_array($functions)) throw new Kohana_Exception('Invalid $functions config, expected in form $functions = [\'name\' => \'SQL\', ...]');
+			foreach ($functions as &$function_) $function_ = trim($function_);
+
+			// Update defaults
+			$updateDefaults_ = isset($class::$updateDefaults) ? $class::$updateDefaults : [];
+			if (!is_array($updateDefaults_)) throw new Kohana_Exception('Invalid $updateDefaults config, expected in form $updateDefaults = [\'field\' => \'SQL\', ...]');
+			$updateDefaults = []; foreach ($updateDefaults_ as $key => $value) $updateDefaults[self::translateKey($key)] = $value;
+			
+			// Events
+			$events = isset($class::$events) ? $class::$events : [];
+			if (!is_array($events)) throw new Kohana_Exception('Invalid $events configuration given');
+			foreach ($events as $key => &$callback_)
 			{
-				if (!is_string($col)) throw new Kohana_Exception('Invalid column definition: :column', [':column' => json_encode($col)]);
-				$key = $col;
-				$col = [];
+				if (!is_string($key) || !is_callable([$class, $callback_])) throw new Kohana_Exception('Invalid $events configuration given');
+				else $callback_ = [$class, $callback_];
 			}
-			else if (!is_array($col)) $col = [$col];
-			$key = self::translateKey($key);
-			$column = [
-				'type'			=> NULL,
-				'primaryKey'	=> NULL,
-				'args'			=> [],
-				'nullable'		=> false,
-				'autoIncrement'	=> NULL,
-				'default'		=> NULL,
-				'sql'			=> NULL,
+
+			// Triggers
+			$triggers = isset($class::$triggers) ? $class::$triggers : [];
+			if (!is_array($triggers)) throw new Kohana_Exception('Invalid $triggers config, expected in form $triggers = [[\'type\' => \'TYPE\', \'event\' => \'EVENT\', \'for\' => \'FOR\', \'function\' => \'FUNCTION\', \'args\' => [\'arg\', \'arg2\', ...], \'columns\' => [\'COLUMN1\', ...]]]');
+			$isFlat = count($triggers) > 0;
+			foreach ($triggers as $trigger) if (is_array($trigger)) { $isFlat = false; break; }
+			if ($isFlat) $triggers = [$triggers];
+			foreach ($triggers as &$trigger)
+			{
+				if (
+					!is_array($trigger)
+					|| !isset($trigger['type'])
+					|| !isset($trigger['event'])
+					|| !isset($trigger['function'])
+				) throw new Kohana_Exception('Invalid $triggers config, expected in form $triggers = [[\'type\' => \'TYPE\', \'event\' => \'EVENT\', \'for\' => \'FOR\', \'function\' => \'FUNCTION\', \'args\' => [\'arg\', \'arg2\', ...], \'columns\' => [\'COLUMN1\', ...]]');
+				$trigger['for'] = Arr::get($trigger, 'for', NULL);
+				if ($trigger['for'] === NULL) $trigger['for'] = self::TRIGGER_FOR_ROW;
+				$trigger['when'] = Arr::get($trigger, 'when', NULL);
+				$trigger['columns'] = Arr::get($trigger, 'columns', []);
+				if (!is_array($trigger['columns'])) $trigger['columns'] = [$trigger['columns']];
+				$trigger['args'] = Arr::get($trigger, 'args', []);
+				if (!is_array($trigger['args'])) $trigger['args'] = [$trigger['args']];
+				if (is_array($trigger['event'])) $trigger['event'] = implode(' OR ', $trigger['event']);
+			}
+
+			// Rules
+			$rules = isset($class::$rules) ? $class::$rules : [];
+			if (!is_array($rules)) throw new Kohana_Exception('Invalid $rules config, expected in form $rules = [[\'event\' => \'EVENT\', \'where\' => \'WHERE\', \'do\' => \'DO\', \'commands\' => [\'COMMAND1\', ...]]]');
+			$isFlat = count($rules) > 0;
+			foreach ($rules as $rule) if (is_array($rule)) { $isFlat = false; break; }
+			if ($isFlat) $rules = [$rules];
+			foreach ($rules as &$rule)
+			{
+				if (
+					!is_array($rule)
+					|| !isset($rule['event'])
+					|| !isset($rule['do'])
+				) throw new Kohana_Exception('Invalid $rules config, expected in form $rules = [[\'event\' => \'EVENT\', \'where\' => \'WHERE\', \'do\' => \'DO\', \'commands\' => [\'COMMAND1\', ...]]]');
+				$rule['where'] = Arr::get($rule, 'where', NULL);
+				$rule['commands'] = Arr::get($rule, 'commands', []);
+				if (!is_array($rule['commands'])) $rule['commands'] = [$rule['commands']];
+			}
+
+			// Vars
+			$uniques = self::initIndex($class, 'uniques');
+			$indexes = self::initIndex($class, 'indexes');
+
+			// Columns
+			if (!isset($class::$columns)) throw new Kohana_Exception('No columns provided');
+			$columns = [];
+			foreach ($class::$columns as $key => $col)
+			{
+				if (is_numeric($key))
+				{
+					if (!is_string($col)) throw new Kohana_Exception('Invalid column definition: :column', [':column' => json_encode($col)]);
+					$key = $col;
+					$col = [];
+				}
+				else if (!is_array($col)) $col = [$col];
+				$key = self::translateKey($key);
+				$column = [
+					'type'			=> NULL,
+					'primaryKey'	=> NULL,
+					'args'			=> [],
+					'nullable'		=> false,
+					'autoIncrement'	=> NULL,
+					'default'		=> NULL,
+					'sql'			=> NULL,
+				];
+				foreach ($col as $k => $value)
+				{
+					if (is_numeric($k))
+					{
+						if (in_array($value, self::supportedTypes())) $column['type'] = $value;
+						else if ($value == self::PRIMARY_KEY) $column['primaryKey'] = true;
+						else if ($value == self::EXTRA_NULLABLE) $column['nullable'] = true;
+						else if ($value == self::EXTRA_AUTO_INCREMENT) $column['autoIncrement'] = true;
+						else $column['args'][] = $value;
+					}
+					else $column[$k] = $value;
+				}
+				if ($column['primaryKey'] === NULL && in_array($key, $primaryKey)) $column['primaryKey'] = true;
+				$columns[$key] = $column;
+			}
+
+			// Primary keys valid?
+			foreach ($columns as $col => $column) if ($column['primaryKey'] && !in_array($col, $primaryKey)) $primaryKey[] = $col;
+			if (count($primaryKey) == 0 && isset($columns['id'])) { $primaryKey = ['id']; $columns['id']['primaryKey'] = true; }
+			foreach ($primaryKey as $pk) if (!isset($columns[$pk]) || !$columns[$pk]['primaryKey']) throw new Kohana_Exception('Invalid primaryKey :pk defined', [':pk' => $pk]);
+			if (count($primaryKey) == 0) throw new Kohana_Exception('No primaryKey defined');
+
+			// More column defaults
+			foreach ($columns as $key => &$column)
+			{
+				if (count($primaryKey) == 1 && $column['primaryKey'] && $column['type'] == self::TYPE_INTEGER && $column['autoIncrement'] === NULL) $column['autoIncrement'] = true;
+				if ($column['primaryKey'] && $column['nullable']) throw new Kohana_Exception('Primary key column :column may not be nullable', [':column' => $key]);
+				if ($column['type'] === NULL && $column['primaryKey']) $column['type'] = self::TYPE_INTEGER;
+				else if ($column['type'] === NULL) $column['type'] = self::TYPE_STRING;
+			}
+
+			// Store object data
+			self::$modelData_[$model] = [
+				'model'			=> $model,
+				'class'			=> $class,
+				'table'			=> $table,
+				'columns'		=> $columns,
+				'hidden'		=> $hidden,
+				'primaryKey'	=> $primaryKey,
+				'relations'		=> [],
+				'db'			=> $db,
+				'uniques'		=> $uniques,
+				'indexes'		=> $indexes,
+				'functions'		=> $functions,
+				'triggers'		=> $triggers,
+				'rules'			=> $rules,
+				'updateDefaults' => $updateDefaults,
+				'events'		=> $events,
 			];
-			foreach ($col as $k => $value)
+
+			// Relations
+			if (isset($class::$relations)) $relations = $class::$relations;
+			else $relations = [];
+			if (!is_array(self::$modelData_[$model]['relations'])) throw new Kohana_Exception('Invalid $relations var in class :class', [':class' => $class]);
+			foreach ($relations as $key => $relation)
 			{
-				if (is_numeric($k))
+				$key = self::translateKey($key);
+				if (!is_array($relation)) $relation = [];
+				if (!isset($relation['type'])) $relation['type'] = self::RELATION_BELONGS_TO;
+				if (!isset($relation['model'])) $relation['model'] = ucfirst(Inflector::camelize(Inflector::humanize(Inflector::singular($key))));
+				if (!isset($relation['getFunction'])) $relation['getFunction'] = isset($relation['get']) ? $relation['get'] : NULL;
+				if (!isset($relation['setFunction'])) $relation['setFunction'] = isset($relation['set']) ? $relation['set'] : NULL;
+				unset($relation['get']);
+				unset($relation['set']);
+				if (!isset($relation['cached'])) $relation['cached'] = true;
+				if (!isset($relation['through'])) $relation['through'] = NULL;
+				if (!isset($relation['onUpdate'])) $relation['onUpdate'] = NULL;
+				if (!isset($relation['onDelete'])) $relation['onDelete'] = NULL;
+				if ($relation['type'] == self::RELATION_MANY_TO_MANY && $relation['through'] === NULL) throw new Kohana_Exception('Invalid relation \':key\': expected \'through\' option for many-to-many relation', [':key' => $key]);
+				if ($relation['getFunction'] === NULL && $relation['setFunction'] === NULL)
 				{
-					if (in_array($value, self::supportedTypes())) $column['type'] = $value;
-					else if ($value == self::PRIMARY_KEY) $column['primaryKey'] = true;
-					else if ($value == self::EXTRA_NULLABLE) $column['nullable'] = true;
-					else if ($value == self::EXTRA_AUTO_INCREMENT) $column['autoIncrement'] = true;
-					else $column['args'][] = $value;
-				}
-				else $column[$k] = $value;
-			}
-			if ($column['primaryKey'] === NULL && in_array($key, $primaryKey)) $column['primaryKey'] = true;
-			$columns[$key] = $column;
-		}
-
-		// Primary keys valid?
-		foreach ($columns as $col => $column) if ($column['primaryKey'] && !in_array($col, $primaryKey)) $primaryKey[] = $col;
-		if (count($primaryKey) == 0 && isset($columns['id']))
-		{
-			$primaryKey = ['id'];
-			$columns['id']['primaryKey'] = true;
-		}
-		foreach ($primaryKey as $pk) if (!isset($columns[$pk]) || !$columns[$pk]['primaryKey']) throw new Kohana_Exception('Invalid primaryKey :pk defined', [':pk' => $pk]);
-		if (count($primaryKey) == 0) throw new Kohana_Exception('No primaryKey defined');
-
-		// More column defaults
-		foreach ($columns as $key => &$column)
-		{
-			if (count($primaryKey) == 1 && $column['primaryKey'] && $column['type'] == self::TYPE_INTEGER && $column['autoIncrement'] === NULL) $column['autoIncrement'] = true;
-			if ($column['primaryKey'] && $column['nullable']) throw new Kohana_Exception('Primary key column :column may not be nullable', [':column' => $key]);
-			if ($column['type'] === NULL)
-			{
-				if ($column['primaryKey']) $column['type'] = self::TYPE_INTEGER;
-				else
-				{
-					$column['type'] = self::TYPE_STRING;
-					$column['args'][] = 255;
-				}
-			}
-		}
-
-		// Unique
-		if (isset($class::$uniques)) $uniques = $class::$uniques;
-		else $uniques = [];
-		if (is_string($uniques)) $uniques = [[$uniques]];
-		else if (!is_array($uniques)) throw new Kohana_Exception('Invalid $uniques config provided, expected in form: $uniques = [[\'field1\', \'field2\'],[\'field3\'], ...]');
-		foreach ($uniques as &$uniq_)
-		{
-			if (is_string($uniq_)) $uniq_ = [$uniq_];
-			foreach ($uniq_ as &$uniq__) $uniq__ = self::translateKey($uniq__);
-		}
-
-		// Indexes
-		if (isset($class::$indexes)) $indexes = $class::$indexes;
-		else $indexes = [];
-		if (is_string($indexes)) $indexes = [[$indexes]];
-		else if (!is_array($indexes)) throw new Kohana_Exception('Invalid $indexes config provided, expected in form: $indexes = [[\'field1\', \'field2\'],[\'field3\'], ...]');
-		foreach ($indexes as &$index_)
-		{
-			if (is_string($index_)) $index_ = [$index_];
-			foreach ($index_ as &$index__) $index__ = self::translateKey($index__);
-		}
-
-		// Store object data
-		self::$modelData_[$model] = [
-			'model'			=> $model,
-			'class'			=> $class,
-			'table'			=> $table,
-			'columns'		=> $columns,
-			'hidden'		=> $hidden,
-			'primaryKey'	=> $primaryKey,
-			'relations'		=> [],
-			'db'			=> $db,
-			'uniques'		=> $uniques,
-			'indexes'		=> $indexes,
-			'functions'		=> $functions,
-			'triggers'		=> $triggers,
-			'rules'			=> $rules,
-			'updateDefaults' => $updateDefaults,
-			'postTableUpdate' => $postTableUpdate,
-			'preUpdate'		=> $preUpdate,
-		];
-
-		// Relations
-		if (isset($class::$relations)) $relations = $class::$relations;
-		else $relations = [];
-		if (!is_array(self::$modelData_[$model]['relations'])) throw new Kohana_Exception('Invalid $relations var in class :class', [':class' => $class]);
-		foreach ($relations as $key => $relation)
-		{
-			$key = self::translateKey($key);
-			if (!is_array($relation)) $relation = [];
-			if (!isset($relation['type'])) $relation['type'] = self::RELATION_BELONGS_TO;
-			if (!isset($relation['model'])) $relation['model'] = ucfirst(Inflector::camelize(Inflector::humanize(Inflector::singular($key))));
-			if (!isset($relation['getFunction'])) $relation['getFunction'] = isset($relation['get']) ? $relation['get'] : NULL;
-			if (!isset($relation['setFunction'])) $relation['setFunction'] = isset($relation['set']) ? $relation['set'] : NULL;
-			unset($relation['get']);
-			unset($relation['set']);
-			if (!isset($relation['cached'])) $relation['cached'] = true;
-			if (!isset($relation['through'])) $relation['through'] = NULL;
-			if (!isset($relation['onUpdate'])) $relation['onUpdate'] = NULL;
-			if (!isset($relation['onDelete'])) $relation['onDelete'] = NULL;
-			if ($relation['type'] == self::RELATION_MANY_TO_MANY && $relation['through'] === NULL) throw new Kohana_Exception('Invalid relation \':key\': expected \'through\' option for many-to-many relation', [':key' => $key]);
-			if ($relation['getFunction'] === NULL && $relation['setFunction'] === NULL)
-			{
-				$clss = 'Model_' . $relation['model']; $clss::staticInit();
-				if (!isset($relation['foreignKey']))
-				{
-					$relation['foreignKey'] = [];
-					switch ($relation['type'])
+					$clss = 'Model_' . $relation['model']; $clss::staticInit();
+					if (!isset($relation['foreignKey']))
 					{
-						case self::RELATION_BELONGS_TO:
-							$prefix = Inflector::singular($key) . '_';
-							foreach (self::$modelData_[$relation['model']]['primaryKey'] as $pk) $relation['foreignKey'][] = $prefix . $pk;
-						break;
-						case self::RELATION_HAS_ONE:
-						case self::RELATION_HAS_MANY:
-						case self::RELATION_MANY_TO_MANY:
-							$prefix = self::translateKey($model) . '_';
-							foreach ($primaryKey as $pk) $relation['foreignKey'][] = $prefix . $pk;
-						break;
+						$relation['foreignKey'] = [];
+						switch ($relation['type'])
+						{
+							case self::RELATION_BELONGS_TO:
+								$prefix = Inflector::singular($key) . '_';
+								foreach (self::$modelData_[$relation['model']]['primaryKey'] as $pk) $relation['foreignKey'][] = $prefix . $pk;
+							break;
+							case self::RELATION_HAS_ONE:
+							case self::RELATION_HAS_MANY:
+							case self::RELATION_MANY_TO_MANY:
+								$prefix = self::translateKey($model) . '_';
+								foreach ($primaryKey as $pk) $relation['foreignKey'][] = $prefix . $pk;
+							break;
+						}
+					}
+					if (!isset($relation['farKey']))
+					{
+						$relation['farKey'] = [];
+						switch ($relation['type'])
+						{
+							case self::RELATION_BELONGS_TO:
+								foreach (self::$modelData_[$relation['model']]['primaryKey'] as $pk) $relation['farKey'][] = $pk;
+							break;
+							case self::RELATION_HAS_ONE:
+							case self::RELATION_HAS_MANY:
+								foreach ($primaryKey as $pk) $relation['farKey'][] = $pk;
+							break;
+							case self::RELATION_MANY_TO_MANY:
+								$prefix = self::translateKey($relation['model']) . '_';
+								foreach (self::$modelData_[$relation['model']]['primaryKey'] as $pk) $relation['farKey'][] = $prefix . $pk;
+							break;
+						}
 					}
 				}
-				if (!isset($relation['farKey']))
-				{
-					$relation['farKey'] = [];
-					switch ($relation['type'])
-					{
-						case self::RELATION_BELONGS_TO:
-							foreach (self::$modelData_[$relation['model']]['primaryKey'] as $pk) $relation['farKey'][] = $pk;
-						break;
-						case self::RELATION_HAS_ONE:
-						case self::RELATION_HAS_MANY:
-							foreach ($primaryKey as $pk) $relation['farKey'][] = $pk;
-						break;
-						case self::RELATION_MANY_TO_MANY:
-							$prefix = self::translateKey($relation['model']) . '_';
-							foreach (self::$modelData_[$relation['model']]['primaryKey'] as $pk) $relation['farKey'][] = $prefix . $pk;
-						break;
-					}
-				}
+				if (!isset($relation['single'])) $relation['single'] = ($relation['getFunction'] === NULL && $relation['setFunction'] === NULL) ? ($relation['type'] == self::RELATION_BELONGS_TO || $relation['type'] == self::RELATION_HAS_ONE) : NULL;
+				self::$modelData_[$model]['relations'][$key] = $relation;
 			}
-			if (!isset($relation['single'])) $relation['single'] = ($relation['getFunction'] === NULL && $relation['setFunction'] === NULL) ? ($relation['type'] == self::RELATION_BELONGS_TO || $relation['type'] == self::RELATION_HAS_ONE) : NULL;
-			self::$modelData_[$model]['relations'][$key] = $relation;
+
+			// Stop profiling
+			if (isset($benchmark)) Profiler::stop($benchmark);
+
+			return $model;
 		}
-		return $model;
+		catch (Exception $e)
+		{
+			// Stop profiling
+			if (isset($benchmark)) Profiler::delete($benchmark);
+
+			// Rethrow
+			throw $e;
+		}
 	}
 
+	/**
+	 * Reset
+	 * 
+	 * @param bool $next
+	 * @return This
+	 */
 	public function reset($next = true)
 	{
 		if ($next AND $this->dbReset_)
@@ -1417,6 +1382,11 @@ class Kohana_DBO
 		return $this;
 	}
 
+	/**
+	 * Clear
+	 *
+	 *  @return This
+	 */
 	public function clear()
 	{
 		$this->data_ = $this->changed_ = $this->relationCache_ = $this->originalValues_ = [];
