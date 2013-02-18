@@ -13,6 +13,7 @@ Install
 
 Type the following commands in your modules folder:
 
+```
 $ git clone git://github.com/vdvleon/kohana-postgresql.git postgresql
 $ cd postgresql
 $ git checkout 3.3/develop
@@ -20,3 +21,5 @@ $ cd ..
 $ git clone git://github.com/vdvleon/DBO.git dbo
 $ cd dbo
 $ git checkout develop
+```
+
