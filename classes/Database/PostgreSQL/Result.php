@@ -9,7 +9,7 @@ class Database_PostgreSQL_Result extends Kohana_Database_PostgreSQL_Result
 {
 	protected function fixTypes($row)
 	{
-		if ($row instanceof DBO) foreach ($row->columns() as $column) $row->setField($column, $this->fixType($row->get($column), $column), true);
+		if ($row instanceof DBO) foreach ($row->columns() as $column) $row->setField($column, $this->fixType($row->getField($column), $column), true);
 		else return parent::fixTypes($row);
 		return $row;
 	}
