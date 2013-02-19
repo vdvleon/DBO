@@ -450,7 +450,7 @@ class Kohana_DBO
 	 * 
 	 * @return This
 	 */
-	public function findAll()
+	public function find_all()
 	{
 		if ($this->loaded_) throw new Kohana_Exception('Method findAll() cannot be called on loaded objects');
 		$this->build_(Database::SELECT);
@@ -493,6 +493,40 @@ class Kohana_DBO
 			else $this->clear();
 			return $this;
 		}
+	}
+
+	/**
+	 * Count all
+	 * 
+	 * @return int
+	 */
+	public function count_all()
+	{
+		// Temporary distract select calls
+		$selects = [];
+		foreach ($this->dbPending_ as $key => $method)
+		{
+			if ($method['name'] == 'select')
+			{
+				$selects[] = $method;
+				unset($this->dbPending_[$key]);
+			}
+		}
+
+		// Get count
+		$this->build_(Database::SELECT);
+		$count = $this->dbBuilder_->from([self::$modelData_[$this->model_]['table'], $this->model_])
+			->select([DB::expr('COUNT(*)'), 'cnt'])
+			->execute(self::$modelData_[$this->model_]['db'])
+			->get('cnt');
+
+		// Add back the select calls
+		$this->dbPending_ += $selects;
+
+		// Reset
+		$this->reset();
+
+		return $count;
 	}
 
 	/**
@@ -799,10 +833,7 @@ class Kohana_DBO
 	 * @param array $relation
 	 * @return mixed
 	 */
-	protected function getHasOne(array $relation)
-	{
-		return $this->getHasMany($relation)->find();
-	}
+	protected function getHasOne(array $relation) { return $this->getHasMany($relation)->find(); }
 
 	/**
 	 * Get has many
@@ -863,8 +894,8 @@ class Kohana_DBO
 		{
 			case self::RELATION_BELONGS_TO:		$model = $this->getBelongsTo(self::$modelData_[$this->model_]['relations'][$key]);	break;
 			case self::RELATION_HAS_ONE:		$model = $this->getHasOne(self::$modelData_[$this->model_]['relations'][$key]);		break;
-			case self::RELATION_HAS_MANY:		$model = $this->getHasMany(self::$modelData_[$this->model_]['relations'][$key]);	break;
-			case self::RELATION_MANY_TO_MANY:	$model = $this->getManyToMany(self::$modelData_[$this->model_]['relations'][$key]);	break;
+			case self::RELATION_HAS_MANY:		return $this->getHasMany(self::$modelData_[$this->model_]['relations'][$key]);	break;
+			case self::RELATION_MANY_TO_MANY:	return $this->getManyToMany(self::$modelData_[$this->model_]['relations'][$key]);	break;
 		}
 		if (self::$modelData_[$this->model_]['relations'][$key]['cached']) $this->relationCache_[$key] = $model;
 		return $model;
@@ -914,7 +945,7 @@ class Kohana_DBO
 				foreach ($value as $val) if (!($val instanceof DBO)) throw new Kohana_Exception('Invalid data provided for setRelation');
 				foreach ($value as $val)
 				{
-					foreach (self::$modelData_[$this->model_]['relations'][$key]['farKey'] as $i => $fk)
+					foreach (self::$modelData_[$this->model_]['relations'][$key]['farKey'] as $i => $fk) 
 					{
 						$val->setField(self::$modelData_[$val->model_]['relations'][$key]['foreignKey'][$i], $this->data_[$fk]);
 					}
@@ -1047,6 +1078,11 @@ class Kohana_DBO
 	 */
 	public function __call($key, array $args)
 	{
+		// Unscore version exists?
+		$func = self::translateKey($key);
+		if (method_exists($this, $func)) return call_user_func_array([$this, $func], $args);
+
+		// Get or set
 		if (count($args) == 0) return $this->get($key);
 		return $this->set($key, $args[0]);
 	}
@@ -1326,6 +1362,8 @@ class Kohana_DBO
 							break;
 						}
 					}
+					else if (!is_array($relation['foreignKey'])) $relation['foreignKey'] = [$relation['foreignKey']];
+					if (empty($relation['foreignKey'])) throw new Kohana_Exception('Foreign key may not be empty for relation :rel', [':rel' => $key]);
 					if (!isset($relation['farKey']))
 					{
 						$relation['farKey'] = [];
@@ -1344,6 +1382,8 @@ class Kohana_DBO
 							break;
 						}
 					}
+					else if (!is_array($relation['farKey'])) $relation['farKey'] = [$relation['farKey']];
+					if (empty($relation['farKey'])) throw new Kohana_Exception('Far key may not be empty for relation :rel', [':rel' => $key]);
 				}
 				if (!isset($relation['single'])) $relation['single'] = ($relation['getFunction'] === NULL && $relation['setFunction'] === NULL) ? ($relation['type'] == self::RELATION_BELONGS_TO || $relation['type'] == self::RELATION_HAS_ONE) : NULL;
 				self::$modelData_[$model]['relations'][$key] = $relation;
