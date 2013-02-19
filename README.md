@@ -6,7 +6,7 @@ An ORM/ActivateRecord system like Kohana-ORM with support for multi-column prima
 Dependencies
 ============
 
-This Kohana modules depends also on the module found on https://github.com/vdvleon/kohana-postgresql
+This Kohana module depends also on the module found on https://github.com/vdvleon/kohana-postgresql
 
 Install
 =======
