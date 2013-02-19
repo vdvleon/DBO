@@ -469,6 +469,29 @@ class Kohana_DBO
 	}
 
 	/**
+	 * Column titles
+	 * 
+	 * @return array
+	 */
+	public function columnTitles()
+	{
+		$titles = array(); foreach (self::$modelData_[$this->model_]['columns'] as $col => $column) $titles[$col] = $column['title'];
+		return $titles;
+	}
+
+	/**
+	 * Column title
+	 * 
+	 * @param string $column
+	 * @return array
+	 */
+	public function columnTitle($column)
+	{
+		if (!array_key_exists($column, self::$modelData_[$this->model_]['columns'])) throw new Kohana_Exception('Can not give title for unexisting column :col', [':col' => $column]);
+		return self::$modelData_[$this->model_]['columns'][$column]['title'];
+	}
+
+	/**
 	 * Load result
 	 * 
 	 * @param bool $multiple
@@ -1272,6 +1295,7 @@ class Kohana_DBO
 					'autoIncrement'	=> NULL,
 					'default'		=> NULL,
 					'sql'			=> NULL,
+					'title'			=> NULL,
 				];
 				foreach ($col as $k => $value)
 				{
@@ -1286,6 +1310,7 @@ class Kohana_DBO
 					else $column[$k] = $value;
 				}
 				if ($column['primaryKey'] === NULL && in_array($key, $primaryKey)) $column['primaryKey'] = true;
+				if ($column['title'] === NULL) $column['title'] = preg_replace('@\bId\b@', 'ID', ucwords(Inflector::humanize($key)));
 				$columns[$key] = $column;
 			}
 
